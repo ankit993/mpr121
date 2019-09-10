@@ -1,0 +1,532 @@
+#include <FS.h>
+//#include <RBDdimmerESP8266.h>
+#include <DNSServer.h>
+#include <ESP8266WebServer.h>
+#include <PubSubClient.h>
+#include <ESP8266WiFi.h>
+#include <ESP8266Ping.h>
+#include <ArduinoJson.h>
+#include <MPR121.h>
+#include <Wire.h>
+//#define outputPin  12
+//#define outputPin1  14
+//#define zerocross  15
+//dimmerLampESP8266 dimmer(outputPin, zerocross); //initialase port for dimmer for MEGA, Leonardo, UNO, Arduino M0, Arduino Zero
+//dimmerLampESP8266 dimmer1(outputPin1, zerocross); //initialase port for dimmer for MEGA, Leonardo, UNO, Arduino M0, Arduino Zero
+int outVal = 0;
+String led = "S052";
+#define numElectrodes 12
+
+int state = LOW;
+int state1 = LOW;
+int state2 = LOW;
+int state3 = LOW;
+
+//int outVal = 0;
+
+bool k = false;
+int counter;
+String clientId = "weo-"; // Add different clientID for each MCU
+char c;
+// Initialise the WiFi and MQTT Client objects
+const char* mqtt_server = "192.168.0.117";
+char mqtt_topic[34] = "";
+char mqtt_publish[34] = "";
+char ssid[30] = "";
+char password[30] = "";
+String ssID;
+WiFiClient wifiClient;
+PubSubClient client(mqtt_server , 1883, wifiClient); // 1883 is the listener port for the Broker
+// First Time config parameters
+String ap_ssid = "WEO-" + String(ESP.getChipId());
+const char *ap_password = "WEOPASSWORD";
+// TCP SERVER PORT DECLARATION....
+int port = 80;  //Port number
+WiFiServer server(port);
+const IPAddress weo_ip(192, 168, 0, 117);
+const uint16_t weo_port = 1880;
+// Function Setup
+int timer = 0;
+void setup() {
+  Serial.begin(115200);
+  pinMode(16, OUTPUT);    // Define pinModes...
+  pinMode(14, OUTPUT);
+  pinMode(12, OUTPUT);
+  pinMode(13, OUTPUT);
+  pinMode(2, OUTPUT);
+
+  digitalWrite(16, HIGH);
+  digitalWrite(14, HIGH);
+  digitalWrite(12, HIGH);
+  digitalWrite(13, HIGH);
+  digitalWrite(2, HIGH);
+
+  MPR121.begin(0x5A);
+  MPR121.setInterruptPin(0);
+  // this is the touch threshold - setting it low makes it more like a proximity trigger
+  // default value is 40 for touch
+  MPR121.setTouchThreshold(4);
+  // this is the release threshold - must ALWAYS be smaller than the touch threshold
+  // default value is 20 for touch
+  MPR121.setReleaseThreshold(2);
+  // initial data update
+  MPR121.updateTouchData();
+
+  Serial.println("mounting FS...");
+  if (SPIFFS.begin()) {
+    Serial.println("mounted file system");
+    if (SPIFFS.exists("/config.json")) {
+      //file exists, reading and loading
+      Serial.println("reading config file");
+      File configFile = SPIFFS.open("/config.json", "r");
+      if (configFile) {
+        Serial.println("opened config file");
+        size_t size = configFile.size();
+        // Allocate a buffer to store contents of the file.
+        std::unique_ptr<char[]> buf(new char[size]);
+        configFile.readBytes(buf.get(), size);
+        DynamicJsonDocument json(1024);
+        DeserializationError error = deserializeJson(json, buf.get());
+        serializeJson(json, Serial);
+        if (!error) {
+          Serial.println("\nparsed json");
+          strcpy(mqtt_topic, json["mqtt_topic"]);
+          strcpy(ssid, json["ssid"]);
+          strcpy(password, json["password"]);
+        } else {
+          Serial.println("failed to load json config");
+        }
+        configFile.close();
+      }
+    }
+  } else {
+    Serial.println("failed to mount FS");
+  }
+  Serial.println(ssid);
+  Serial.println(sizeof(ssid));
+  String ssID(ssid);
+  Serial.print(ssID.length());
+  Serial.println(password);
+  counter = 0;
+
+  //SSID CHECK
+  if (ssID.length() != 0) {
+    setup_wifi1();
+    client.setServer(mqtt_server, 1883);
+    client.setCallback(callback);
+    char bufferpub[40];
+    char pub[10] = "/pub";
+    strcpy(mqtt_publish, mqtt_topic);
+    strcpy(mqtt_publish + strlen(mqtt_publish), pub);
+  } else {
+    digitalWrite(16, LOW);
+    setup_wifi();
+  }
+  //  dimmer.begin(NORMAL_MODE, OFF); //dimmer initialisation: name.begin(MODE, STATE)
+  //  dimmer1.begin(NORMAL_MODE, OFF); //dimmer initialisation: name.begin(MODE, STATE)
+}
+void loop() {
+  //  process();
+  //  bool ret = Ping.ping(weo_ip);
+  //  if (!client.connected() && wifiClient.connect(weo_ip, weo_port)) {
+  //    wifiClient.stop();
+  //    Serial.println("client stopped");
+  //    PubSubClient client(mqtt_server ,1883, wifiClient);
+  ////   process();
+  //    delay(1000);
+  //    reconnect();
+  //  }
+
+  if (!client.connected()) {
+    //    process();
+    reconnect();
+    //    Serial.println("bye");
+  }
+  //  if(timer == 100){
+  //    if (!client.connected()) {
+  ////    process();
+  //    reconnect();
+  //  }
+  //
+  //  }
+  //  timer++;
+  //  Serial.println(timer);
+
+  client.loop();
+  process();
+  client.loop();
+  //Serial.println("hello");
+}
+
+void process() {
+  if (MPR121.touchStatusChanged()) {
+    MPR121.updateTouchData();
+    //    Serial.println("hello-bye");
+    for (int i = 0; i < numElectrodes; i++) {
+      //      Serial.println("hello-for");
+      if (MPR121.isNewTouch(i)) {
+        Serial.print("electrode ");
+        Serial.print(i, DEC);
+        Serial.println(" was just touched");
+        StaticJsonDocument<256> json;
+
+        if (i == 0)
+        {
+          if (state == LOW)
+          {
+            state = HIGH;
+            char buffer[512];
+            json["mqtt_topic"] = mqtt_topic;
+//            if (led == "S054")
+              json["Light/value"] = "S052";
+//            if (led == "S052")
+//              json["Light/value"] = "S054";
+            Serial.println("S052");
+            size_t n = serializeJson(json, buffer);
+            client.publish("Pinupdate", buffer, n);
+            digitalWrite(D0, state);
+
+            Serial.println("on");
+          }
+
+          else
+          {
+            state = LOW;
+            char buffer[512];
+            json["mqtt_topic"] = mqtt_topic;
+//            if (led == "S054")
+//              json["Light/value"] = "S052";
+//            if (led == "S052")
+              json["Light/value"] = "S054";
+            //            json["Light/value"] = "S052";
+            digitalWrite(D0, state);
+            Serial.println("S054");
+
+            size_t n = serializeJson(json, buffer);
+
+            client.publish("Pinupdate", buffer, n);
+            Serial.println("off");
+//            digitalWrite(D0, LOW);
+          }
+          //            digitalWrite(D0, state);
+        }
+
+        //      else if(MPR121.isNewRelease(i)){
+        //        Serial.print("electrode ");
+        //        Serial.print(i, DEC);
+        //        Serial.println(" was just released");
+        Serial.println("hello-hhh");
+      }
+    }
+  }
+}
+
+
+// TCP SERVER
+bool tcp() {
+  wifiClient = server.available();
+  if (wifiClient) {
+    Serial.println("test");
+    if (wifiClient.connected())
+    {
+      Serial.println("Client Connected");
+    }
+    String inMsg;
+    char ch;
+    while (wifiClient.connected()) {
+      while (wifiClient.available() > 0) {
+        inMsg = wifiClient.readString();
+        Serial.println(wifiClient.available());
+      }
+    }
+    Serial.println("Client disconnected");
+    wifiClient.stop();
+    int Strlength = inMsg.length() + 1;
+    char buf[Strlength];
+    inMsg.toCharArray(buf, Strlength);
+    StaticJsonDocument<200> json;
+    deserializeJson(json, buf);
+    strcpy(mqtt_topic, json["mqtt_topic"]);
+    strcpy(ssid, json["ssid"]);
+    strcpy(password, json["password"]);
+    File order = SPIFFS.open("/config.json", "w+");
+    if (order) {
+      serializeJson(json, Serial);
+      serializeJson(json, order);
+    }
+    order.close();
+    k = true;
+    return k;
+  }
+}
+void setup_wifi() {
+  IPAddress local_IP(192, 168, 4, 22);
+  IPAddress gateway(192, 168, 4, 9);
+  IPAddress subnet(255, 255, 255, 0);
+  WiFi.mode(WIFI_AP);
+  WiFi.softAPConfig(local_IP, gateway, subnet);
+  WiFi.softAP(ap_ssid, ap_password, 3, 0); //Connect to wifi
+  Serial.println("Server Started");
+  Serial.println(ap_ssid);
+  Serial.println(local_IP);
+  server.begin();
+  while (k != true) {
+    tcp();
+  }
+  delay(10);
+  // We start by connecting to a WiFi network
+  Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+  WiFi.hostname("WEO-" + String(mqtt_topic));
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(100);
+    process();
+    Serial.print(".");
+    //    timer = timer + 1;
+    //    if (timer == 100) {
+    //      SPIFFS.remove("/config.json");
+    //      ESP.restart();
+    //    }
+  }
+  randomSeed(micros());
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+  client.setServer(mqtt_server, 1883);
+  client.setCallback(callback);
+  char bufferpub[40];
+  char pub[10] = "/pub";
+  strcpy(mqtt_publish, mqtt_topic);
+  strcpy(mqtt_publish + strlen(mqtt_publish), pub);
+  char buffer[512];
+  while (!client.connected()) {
+    reconnect();
+    Serial.println("waiting");
+    delay(400);
+  }
+  File configFile = SPIFFS.open("/config.json", "r");
+  if (configFile) {
+    Serial.println("opened config file");
+    size_t size = configFile.size();
+    // Allocate a buffer to store contents of the file.
+    std::unique_ptr<char[]> buf(new char[size]);
+    configFile.readBytes(buf.get(), size);
+    DynamicJsonDocument json(1024);
+    DeserializationError error = deserializeJson(json, buf.get());
+    size_t n = serializeJson(json, buffer);
+    client.publish("setup", buffer, n);
+    if (!error) {
+      Serial.println("\nparsed json");
+    } else {
+      Serial.println("failed to load json config");
+    }
+    configFile.close();
+  }
+}
+
+void reconnect() {
+  // Loop until reconnect
+  while (!client.connected()) {
+
+    if (client.state() == -2) {
+//      Serial.println("halo");
+      if(timer==100000){
+        delay(1000);
+        if (client.connect((clientId + mqtt_topic).c_str())) {
+         Serial.println("*WEO: connected");
+         client.subscribe(mqtt_topic);
+        }
+        timer = 0;
+      }
+      timer++;
+      Serial.println(timer);
+      break;
+    }
+    Serial.print("*WEO: Attempting MQTT connection...");
+    if (client.connect((clientId + mqtt_topic).c_str())) {
+      Serial.println("*WEO: connected");
+      client.subscribe(mqtt_topic);
+
+      File file = SPIFFS.open("/config.json", "a+");
+      if (file) {
+        char buffer[1024];
+        size_t size = file.size();
+        // Allocate a buffer to store contents of the file.
+        std::unique_ptr<char[]> buf(new char[size]);
+        file.readBytes(buf.get(), size);
+        DynamicJsonDocument json(1024);
+        DeserializationError error = deserializeJson(json, buf.get());
+        json["IP"] =  WiFi.localIP().toString();
+        size_t n = serializeJson(json, buffer);
+        boolean rc = client.publish("PinState", buffer, n);
+        client.subscribe("Weo");
+      } else {
+        Serial.println("*WEO: failed to load json config");
+      }
+      file.close();
+      // Once connected, publish an announcement...
+    }
+    else {
+      process();
+      //break;
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println("*WEO: try again in 5 seconds");
+
+      //      counter = counter + 1;
+      //      if (counter == 600) {
+      //        Serial.println("*WEO: Wait, Restarting MCU...... in 5 Seconds");
+      //        delay(5000);
+      //        setup();
+      //      }
+      delay(500);
+    }
+  }
+}
+void setup_wifi1() {
+  delay(10);
+  // We start by connecting to a WiFi network
+  Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+  WiFi.hostname("WEO-" + String(mqtt_topic));
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    process();
+    Serial.print(".");
+    //    timer = timer + 1;
+    //    if (timer == 100) {
+    //      ESP.restart();
+    //    }
+  }
+  randomSeed(micros());
+}
+
+void callback(char* topic, byte* payload, unsigned int length) {
+  StaticJsonDocument<256> json;
+  deserializeJson(json, payload, length);
+  if (json.size() != 0) {
+    String Light = json["Light"];
+    String Light1 = json["Light1"];
+    String Light2 = json["Light2"];
+    String Light3 = json["Light3"];
+    String Light4 = json["Light4"];
+    Serial.println(Light);
+    led = Light;
+    //    String Fan = json["Fan"];
+    //    String Fan1 = json["Fan1"];
+    String All_Lights = json["All_Lights"];
+    //    String All = json["All"];
+    //    String All_Fans = json["All_Fans"];
+    //    String State = json["State"];
+    int Pin16; int Pin14; int Pin12; int Pin13; int Pin2;
+    if (Light != "null" && String(topic) == String(mqtt_topic)) {
+      if (Light == "S052" ||  Light == "off") {
+        Pin16 = 1;
+      }
+      else {
+        Pin16 = 0;
+      }
+    }
+    if (Light1 != "null" && String(topic) == String(mqtt_topic)) {
+      if (Light1 == "S082" || Light1 == "off") {
+        Pin14 = 1;
+      }
+      else {
+        Pin14 = 0;
+      }
+    }
+    if (Light2 != "null" && String(topic) == String(mqtt_topic)) {
+      if (Light2 == "S022" || Light2 == "off") {
+        Pin12 = 1;
+      }
+      else {
+        Pin12 = 0;
+      }
+    }
+    if (Light3 != "null" && String(topic) == String(mqtt_topic)) {
+      if (Light3 == "S042" || Light3 == "off") {
+        Pin13 = 1;
+      }
+      else {
+        Pin13 = 0;
+      }
+    }
+    if (Light4 != "null" && String(topic) == String(mqtt_topic)) {
+      if (Light4 == "S072" || Light4 == "off") {
+        Pin2 = 1;
+      }
+      else {
+        Pin2 = 0;
+      }
+    }
+    //    if (Fan != "null" && String(topic) == String(mqtt_topic)) {
+    //      if (Fan == "F0140") {
+    //        dimmer.setState(OFF);
+    //      }
+    //      if (Fan == "F01425") {
+    //        dimmer.setState(ON); dimmer.setPower(25);
+    //      }
+    //      if (Fan == "F01450") {
+    //        dimmer.setState(ON); dimmer.setPower(50);
+    //      }
+    //      if (Fan == "F01475") {
+    //        dimmer.setState(ON); dimmer.setPower(75);
+    //      }
+    //      if (Fan == "F014100") {
+    //        dimmer.setState(ON); dimmer.setPower(100);
+    //      }
+    //    }
+    //    if (Fan1 != "null" && String(topic) == String(mqtt_topic)) {
+    //      if (Fan1 == "F0240") {
+    //        dimmer1.setState(OFF);
+    //      }
+    //      if (Fan1 == "F02425") {
+    //        dimmer1.setState(ON); dimmer1.setPower(25);
+    //      }
+    //      if (Fan1 == "F02450") {
+    //        dimmer1.setState(ON); dimmer1.setPower(50);
+    //      }
+    //      if (Fan1 == "F02475") {
+    //        dimmer1.setState(ON); dimmer1.setPower(75);
+    //      } if (Fan1 == "F024100") {
+    //        dimmer1.setState(ON); dimmer1.setPower(100);
+    //      }
+    //    }
+    if (All_Lights != "null") {
+      if (All_Lights == "alllightsoff") {
+        Pin16 = 0; Pin14 = 0; Pin12 = 0; Pin13 = 0; Pin2 = 0;
+      }
+      if (All_Lights == "alllightson") {
+        Pin16 = 1; Pin14 = 1; Pin12 = 1; Pin13 = 1; Pin2 = 1;
+      }
+    }
+    //    if (All_Fans != "null") {
+    //      if (All_Fans == "allfanson") {
+    //        dimmer.setState(ON); dimmer.setPower(50); dimmer1.setState(ON); dimmer1.setPower(50);
+    //      }
+    //      if (All_Fans == "allfansoff") {
+    //        dimmer.setState(OFF); dimmer1.setState(OFF);
+    //      }
+    //    }
+    //    if (All != "null") {
+    //      if (All == "allon") {
+    //        Pin16 = 0; Pin5 = 0; Pin4 = 0; Pin0 = 0; Pin2 = 0; dimmer.setState(ON); dimmer1.setState(ON);
+    //      }
+    //      if (All == "alloff") {
+    //        Pin16 = 1; Pin5 = 1; Pin4 = 1; Pin0 = 1; Pin2 = 1; dimmer.setState(OFF); dimmer1.setState(OFF);
+    //      }
+    //    }
+    digitalWrite(16, Pin16);
+    digitalWrite(14, Pin14);
+    digitalWrite(12, Pin12);
+    digitalWrite(13, Pin13);
+    digitalWrite(2, Pin2);
+  }
+}
